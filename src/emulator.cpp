@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <iostream>
 
+#define PC registers[0]
+
 const int regAmount = 16;
 
 
@@ -24,6 +26,18 @@ namespace opcode {
         "cmp", "jmp", "jz", "jnz", "jgt", "jlt", "jge", "jle",
         "call", "callr", "ret",
         "nop", "hlt", "wait", "waiti", "cont"
+    };
+
+    enum class eOpcode : uint8_t {
+        LDI, MOV, LD, STR, XCHG,
+        PSH, PSHI, POP, PEK, SRMV,
+        SWP, LEA,
+        ADD, SUB, MUL, DIV, INC, DEC,
+        AND, OR, NOT, XOR,
+        SHL, SHR, RSL, RSR,
+        CMP, JMP, JZ, JNZ, JGT, JLT, JGE, JLE,
+        CALL, CALLR, RET,
+        NOP, HLT, WAIT, WAITI, CONT
     };
   
     const std::unordered_map<std::string, std::vector<int>> operands {
@@ -138,15 +152,65 @@ std::string registerName(int idx) {
     return "???"; // invalid / does not exist
 }
 
+int runProgram(std::vector<uint8_t> bytes, std::vector<uint16_t> registers, std::vector<uint8_t> mem) {
+    bool running = true;
+    // register[0] = PC
+
+    std::copy(bytes.begin(), mem.end(), mem.begin());
+
+    PC = 0;
+    while (running) {
+        uint8_t b = mem[PC];
+        switch (b) {
+            case (uint8_t)(opcode::eOpcode::LDI): {
+                int reg = (mem[PC + 1] << 8) | mem[PC + 2];
+                int val = (mem[PC + 3] << 8) | mem[PC + 4];
+                registers[reg] = val;
+                break;
+            }
+            case (uint8_t)(opcode::eOpcode::MOV): {
+                int regB = (mem[PC + 1] << 8) | mem[PC + 2];
+                int regA = (mem[PC + 3] << 8) | mem[PC + 4];
+                registers[regA] = regB;
+                break;
+            }
+            case (uint8_t)(opcode::eOpcode::LD): {
+                int reg = (mem[PC + 1] << 8) | mem[PC + 2];
+                int addr = (mem[PC + 3] << 8) | mem[PC + 4];
+                registers[reg] = (mem[addr] << 8);
+                break;
+            }
+            case (uint8_t)(opcode::eOpcode::STR): {
+                int addr = (mem[PC + 1] << 8) | mem[PC + 2];
+                int reg = (mem[PC + 3] << 8) | mem[PC + 4];
+                mem[addr] = (registers[reg] & 0xFF00) >> 8;
+                mem[addr + 1] = registers[reg] &0x00FF;
+                break;
+            }
+            case (uint8_t)(opcode::eOpcode::XCHG): {
+                int regB = (mem[PC + 1] << 8) | mem[PC + 2];
+                int regA = (mem[PC + 3] << 8) | mem[PC + 4];
+
+                uint16_t regI = registers[regB];
+                registers[regB] = registers[regA];
+                registers[regA] = regI;
+                break;
+            }
+        }
+    }
+}
+
 int main(int argc, char** argv) {
     std::vector<uint8_t> bytes = readBytes("out.bin");
+
+    std::vector<uint16_t> registers(10 + regAmount, 0);
 
     std::string OP = "";
 
     int i = 0;
     for (uint8_t b: bytes) {
         std::cout << hex(b);
-        if (i % 3 == 0) {
+        if (i % 5 == 0) {
             OP = opcode::opcodes[b];
             std::cout << "\x1b[38;5;231;1m\t" << opcode::opcodes[b] << "\x1b[0m";
         }
