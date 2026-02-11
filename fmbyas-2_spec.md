@@ -49,7 +49,7 @@ JLT = Jumps if the negative flag is set (less than)                 (jtl [label 
 JGE = Jumps if the negative flag isn't set (greater than or equal)  (jge [label name])
 JLE = Jumps if the greater flag isn't set (lesser than or equal)    (jle [label name])
 CALL = Calls a function that saves to stack when returned           (call [label name])
-CALLR = Calls the function that a register is pointing to           (callr [register])
+CALLR = Calls the function that a register is pointing to           (callr [register]) (deprecated)
 RET = Returns execution from the last caller                        (ret)
 ```
 

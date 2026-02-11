@@ -491,9 +491,24 @@ int runProgram(std::vector<uint8_t> bytes, std::vector<uint16_t>& registers, std
                 }
                 break;
             }
-            case (uint8_t)(opcode::eOpcode::NOP): {
+            case (uint8_t)(opcode::eOpcode::CALL): {
+                int addr = (mem[PC + 1] << 8) | mem[PC + 2];
+
+                uint16_t return_addr = PC + 5;  
+                mem[SP] = (return_addr & 0xFF00) >> 8;
+                mem[SP - 1] = return_addr & 0x00FF;
+                SP -= 2;
+
+                PC = addr - 5;
                 break;
             }
+            case (uint8_t)(opcode::eOpcode::RET): {
+                SP += 2;
+                uint16_t return_addr = (mem[SP] << 8) | mem[SP - 1];
+                PC = return_addr - 5;
+                break;
+            }
+            case (uint8_t)(opcode::eOpcode::NOP): break;
             case (uint8_t)(opcode::eOpcode::HLT): {
                 running = false;
                 break;
