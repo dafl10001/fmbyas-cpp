@@ -271,7 +271,7 @@ int runProgram(std::vector<uint8_t> bytes, std::vector<uint16_t>& registers, std
             case (uint8_t)(opcode::eOpcode::PSHI): {
                 int val = (mem[PC + 1] << 8) | mem[PC + 2];
                 mem[SP] = val & 0x00FF;
-                mem[SP - 1] = (registers[val] & 0xFF00) >> 8;
+                mem[SP - 1] = (val & 0xFF00) >> 8;
                 SP -= 2;
                 break;
             }
@@ -533,6 +533,14 @@ int runProgram(std::vector<uint8_t> bytes, std::vector<uint16_t>& registers, std
                 int addr = 0xAA00 + 2 * (x + y * 80);
                 char c = (char)mem[addr + 1];
                 if (c < 32 || c > 126) c = ' ';
+
+                int col = mem[addr];
+
+                attrset(A_NORMAL);
+                if (col) {
+                    attron(COLOR_PAIR(1));
+                }
+
                 mvaddch(y, x, (unsigned char)c);
             }
         }
@@ -581,9 +589,12 @@ int main(int argc, char** argv) {
     }
 
     initscr();
+    start_color();
     cbreak();
     noecho();
     keypad(stdscr, TRUE);
+
+    init_pair(1, COLOR_BLACK, COLOR_WHITE);
 
     runProgram(bytes, registers, memory);
 
