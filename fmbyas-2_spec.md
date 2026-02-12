@@ -118,3 +118,15 @@ WAIT = Halts for the amount of cycles described by a register       (wait [regis
 WAITI = Halts for a certain amount of cycles                        (waiti [value])
 CONT = Continue execution in RAM                                    (cont)
 ```
+
+
+## Emulator spec:
+### Memory:
+ - The emulator should have exactly 64K of space
+ - The stack should start att 0xFFFF and then decrement
+ - When writing to RAM, the high bits should get put in the address and the low bits should be put in the address + 1.
+
+### Screen:
+ - When printing to the screen, an ascii character should be put in the low bits of a register and write to memory location 0xAA00 + 2 * (x + y * 80).
+ - The screen size should be 80x25.
+
