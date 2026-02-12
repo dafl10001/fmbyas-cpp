@@ -564,6 +564,7 @@ int main(int argc, char** argv) {
     size_t i = 0;
     while (i < bytes.size()) {
         // Print raw bytes
+        std::cout << i << ":\t";
         for (size_t j = 0; j < 5 && i + j < bytes.size(); ++j) {
             std::cout << hex(bytes[i + j]) << " ";
         }
