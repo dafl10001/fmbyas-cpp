@@ -124,7 +124,7 @@ int to_int(const std::string& s) {
 
 int parseRegisters(std::string regName) {
     if (regName == "pc") return 0;
-    if (regName == "stackptr") return 1;
+    if (regName == "sp") return 1;
     if (regName == "flags") return 2;
 
     // Handle io0 - io7 (Indices 3 - 10)
@@ -167,6 +167,21 @@ bool is_integer(const std::string& s) {
     }
     return true;
 }
+
+auto parseNumber = [](const std::string &s) -> uint16_t {
+    try {
+        if (s.size() > 2 && s[0] == '0') {
+            if (s[1] == 'x' || s[1] == 'X') {
+                return static_cast<uint16_t>(std::stoul(s, nullptr, 16)); // hex
+            } else if (s[1] == 'b' || s[1] == 'B') {
+                return static_cast<uint16_t>(std::stoul(s.substr(2), nullptr, 2)); // binary
+            }
+        }
+        return static_cast<uint16_t>(std::stoul(s, nullptr, 10)); // decimal
+    } catch (...) {
+        return 0;
+    }
+};
 
 std::vector<uint8_t> tokenize(const std::vector<std::string>& code) {
     std::unordered_map<std::string, uint16_t> labels;
@@ -211,7 +226,7 @@ std::vector<uint8_t> tokenize(const std::vector<std::string>& code) {
                             ops[step] = labels[operand_tok];
                         } else {
                             try {
-                                ops[step] = static_cast<uint16_t>(std::stoi(operand_tok));
+                                ops[step] = static_cast<uint16_t>(parseNumber(operand_tok));
                             } catch (...) { ops[step] = 0; }
                         }
                     }

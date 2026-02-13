@@ -5,6 +5,7 @@
 #include <fstream>
 #include <cstdint>
 #include <iostream>
+#include <ncurses.h>
 
 #define PC registers[0]
 #define SP registers[1]
@@ -155,7 +156,7 @@ std::string hex(int n) {
 
 std::string registerName(int idx) {
     if (idx == 0) return "pc";
-    if (idx == 1) return "stackptr";
+    if (idx == 1) return "sp";
     if (idx == 2) return "flags";
     if (idx >= 3 && idx <= 10) return "io" + std::to_string(idx - 3);
     if (idx >= 11 && idx < 11 + regAmount) return "r" + std::to_string(idx - 10);
@@ -164,7 +165,7 @@ std::string registerName(int idx) {
 
 int parseRegisters(std::string regName) {
     if (regName == "pc") return 0;
-    if (regName == "stackptr") return 1;
+    if (regName == "sp") return 1;
     if (regName == "flags") return 2;
 
     // Handle io0 - io7 (Indices 3 - 10)
@@ -270,7 +271,7 @@ int runProgram(std::vector<uint8_t> bytes, std::vector<uint16_t>& registers, std
             case (uint8_t)(opcode::eOpcode::PSHI): {
                 int val = (mem[PC + 1] << 8) | mem[PC + 2];
                 mem[SP] = val & 0x00FF;
-                mem[SP - 1] = (registers[val] & 0xFF00) >> 8;
+                mem[SP - 1] = (val & 0xFF00) >> 8;
                 SP -= 2;
                 break;
             }
@@ -525,11 +526,29 @@ int runProgram(std::vector<uint8_t> bytes, std::vector<uint16_t>& registers, std
                 freeze = val;
                 break;
             }
+
+        }
+        for (int y = 0; y < 25; y++) {
+            for (int x = 0; x < 80; x++) {
+                int addr = 0xAA00 + 2 * (x + y * 80);
+                char c = (char)mem[addr + 1];
+                if (c < 32 || c > 126) c = ' ';
+
+                int col = mem[addr];
+
+                attrset(A_NORMAL);
+                if (col) {
+                    attron(COLOR_PAIR(1));
+                }
+
+                mvaddch(y, x, (unsigned char)c);
+            }
         }
         PC += 5;
         skip:
+        refresh();
     }
-    std::cout << registers[parseRegisters("io0")] << std::endl;
+    // std::cout << registers[parseRegisters("io0")] << std::endl;
     return 0;
 }
 
@@ -540,36 +559,55 @@ int main(int argc, char** argv) {
     std::vector<uint16_t> registers(10 + regAmount, 0);
     std::vector<uint8_t> memory(65536);
 
-    std::string OP = "";
-
     int lookup[5] = {-1, 0, 0, 1, 1};
 
-    int i = 0;
-    for (uint8_t b: bytes) {
-        std::cout << hex(b);
-        if (i % 5 == 0) {
-            OP = opcode::opcodes[b];
-            std::cout << "\x1b[38;5;231;1m\t" << opcode::opcodes[b] << "\x1b[0m";
+    size_t i = 0;
+    while (i < bytes.size()) {
+        // Print raw bytes
+        std::cout << i << ":\t";
+        for (size_t j = 0; j < 5 && i + j < bytes.size(); ++j) {
+            std::cout << hex(bytes[i + j]) << " ";
         }
-        else if (opcode::operands.at(OP)[lookup[i % 5]] == opcode::VAL) {
-            std::cout << "\x1b[38;5;214m\t" << (int)b << "\x1b[0m";
-        }
-        else if (opcode::operands.at(OP)[lookup[i % 5]] == opcode::REG && !((i % 5) % 2)) {
-            std::cout << "\x1b[38;5;204m\t" << registerName(b + (bytes[i - 1] << 8)) << "\x1b[0m";
-        }
-        else if (opcode::operands.at(OP)[lookup[i % 5]] == opcode::REG && ((i % 5) % 2)) {
 
-        }
-        else {
-            std::cout << "\x1b[1m\tnil\x1b[0m";
+        // Figure out opcode
+        std::string OP = opcode::opcodes[bytes[i]];
+
+        std::cout << "\t\x1b[38;5;231;1m" << OP << "\x1b[0m";
+
+        const std::vector<int>& operands = opcode::operands.at(OP);
+
+        for (size_t op_idx = 0; op_idx < operands.size(); ++op_idx) {
+            int type = operands[op_idx];
+            if (type == opcode::VAL || type == opcode::REG) {
+                // 16-bit operand: combine the two bytes
+                uint16_t val = (bytes[i + 1 + op_idx * 2] << 8) | bytes[i + 2 + op_idx * 2];
+
+                if (type == opcode::VAL) {
+                    std::cout << "\t\x1b[38;5;214m" << val << "\x1b[0m";
+                } else {
+                    std::cout << "\t\x1b[38;5;204m" << registerName(val) << "\x1b[0m";
+                }
+            } else {
+                std::cout << "\t\x1b[1mnil\x1b[0m";
+            }
         }
 
         std::cout << std::endl;
-    
-        i++;
+        i += 5; // Next instruction
     }
 
+    initscr();
+    start_color();
+    cbreak();
+    noecho();
+    keypad(stdscr, TRUE);
+
+    init_pair(1, COLOR_BLACK, COLOR_WHITE);
+
     runProgram(bytes, registers, memory);
+
+    endwin();
+
 
     return 0;
 }
