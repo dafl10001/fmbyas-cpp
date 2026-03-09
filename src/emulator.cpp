@@ -5,14 +5,21 @@
 #include <fstream>
 #include <cstdint>
 #include <iostream>
+#ifdef CURSESSUPPORT
 #include <ncurses.h>
+#include <thread>
+#endif
+#include <chrono>
+#include <cstring>
 
 #define PC registers[0]
 #define SP registers[1]
 #define FLAGS registers[2]
 
-const int regAmount = 16;
+int regAmount = 16;
+int keyPollingRate = 1000;
 
+bool running = true;
 
 namespace opcode {
     constexpr int NONE = 0;
@@ -20,7 +27,7 @@ namespace opcode {
     constexpr int VAL = 2;
 
     const std::vector<std::string> opcodes {
-        "ldi", "mov", "ld", "str", "xchg",
+        "ldi", "mov", "ld", "str", "rld", "rstr", "xchg",
         "psh", "pshi", "pop", "pek", "srmv",
         "swp", "lea",
         "add", "sub", "mul", "div", "inc", "dec",
@@ -28,11 +35,11 @@ namespace opcode {
         "shl", "shr", "rsl", "rsr",
         "cmp", "jmp", "jz", "jnz", "jgt", "jlt", "jge", "jle",
         "call", "callr", "ret",
-        "nop", "hlt", "wait", "waiti", "cont"
+        "nop", "hlt", "wait", "waiti", "cont", "tjf"
     };
 
     enum class eOpcode : uint8_t {
-        LDI, MOV, LD, STR, XCHG,
+        LDI, MOV, LD, STR, RLD, RSTR, XCHG,
         PSH, PSHI, POP, PEK, SRMV,
         SWP, LEA,
         ADD, SUB, MUL, DIV, INC, DEC,
@@ -40,7 +47,7 @@ namespace opcode {
         SHL, SHR, RSL, RSR,
         CMP, JMP, JZ, JNZ, JGT, JLT, JGE, JLE,
         CALL, CALLR, RET,
-        NOP, HLT, WAIT, WAITI, CONT
+        NOP, HLT, WAIT, WAITI, CONT, TJF
     };
   
     const std::unordered_map<std::string, std::vector<int>> operands {
@@ -48,6 +55,8 @@ namespace opcode {
         {"mov",   {REG, REG}},
         {"ld",    {REG, VAL}},
         {"str",   {VAL, REG}},
+        {"rld", {REG, REG}},
+        {"rstr", {REG, REG}},
         {"xchg",  {REG, REG}},
         {"psh",   {REG, NONE}},
         {"pshi",  {VAL, NONE}},
@@ -85,7 +94,8 @@ namespace opcode {
         {"hlt",   {NONE, NONE}},
         {"wait",  {REG, NONE}},
         {"waiti", {VAL, NONE}},
-        {"cont",  {NONE, NONE}}
+        {"cont",  {NONE, NONE}},
+        {"tjf",   {NONE, NONE}}
     };
 }
 
@@ -93,7 +103,8 @@ enum FlagBit {
     ZERO_BIT = 0,    // Set if result is 0
     CARRY_BIT = 1,   // Set if unsigned overflow occurs
     SIGN_BIT = 2,    // Set if result is negative (MSB is 1)
-    OVERFLOW_BIT = 3 // Set if signed overflow occurs
+    OVERFLOW_BIT = 3,// Set if signed overflow occurs
+    JUMP_BIT = 4     // Set if jumps should be relative instead of absolute
 };
 
 
@@ -163,39 +174,37 @@ std::string registerName(int idx) {
     return "???"; // invalid / does not exist
 }
 
-int parseRegisters(std::string regName) {
+int parseRegisters(const std::string& regName) {
     if (regName == "pc") return 0;
     if (regName == "sp") return 1;
     if (regName == "flags") return 2;
 
-    // Handle io0 - io7 (Indices 3 - 10)
-    if (regName.size() >= 3 && regName.substr(0, 2) == "io") {
+    if (regName.size() >= 3 && regName.substr(0,2) == "io") {
         try {
             int num = std::stoi(regName.substr(2));
             if (num >= 0 && num <= 7) {
-                return num + 3; // Offset by 3 (pc, sp, flags)
+                return num + 3; // offset after pc, sp, flags
             }
         } catch (...) {}
         std::cerr << "Invalid IO register: " << regName << std::endl;
         return -1;
     }
 
-    // Handle r0 - rn (Indices 11 - n+11)
     if (regName.size() >= 2 && regName[0] == 'r') {
         try {
             int num = std::stoi(regName.substr(1));
-            int idx = num + 11; // Offset by 11 (pc, sp, flags, 8 io regs)
-            if (num >= 0 && idx < 11 + regAmount) {
-                return idx;
+            if (num >= 0 && num < regAmount) {
+                return num + 11; // offset after pc, sp, flags, io0-7
             }
         } catch (...) {}
-        std::cerr << "Invalid register: " << regName << std::endl;
+        std::cerr << "Invalid general-purpose register: " << regName << std::endl;
         return -1;
     }
 
-    
+    std::cerr << "Unknown register: " << regName << std::endl;
     return -1;
 }
+
 
 void setFlag(std::vector<uint16_t>& regs, FlagBit bit, bool condition) {
     if (condition) {
@@ -210,16 +219,99 @@ bool getFlag(std::vector<uint16_t>& regs, FlagBit bit) {
 }
 
 
-int runProgram(std::vector<uint8_t> bytes, std::vector<uint16_t>& registers, std::vector<uint8_t>& mem) {
-    bool running = true;
+#ifdef CURSESSUPPORT
+uint16_t pollKey() {
+    int ch = getch();
 
+    if (ch == ERR) return 0;
+
+    uint8_t counter = 0x00;
+    uint8_t keycode = 0;
+
+    switch(ch) {
+        case KEY_UP:    keycode = 17; break;
+        case KEY_DOWN:  keycode = 18; break;
+        case KEY_LEFT:  keycode = 19; break;
+        case KEY_RIGHT: keycode = 20; break;
+        case KEY_BACKSPACE: keycode = 8; break;
+        case KEY_DC:    keycode = 127; break;
+        case 9:        keycode = 9; break;
+        case 10:       keycode = 10; break;
+        case 27:       keycode = 27; break;
+        case 32:       keycode = 32; break;
+        default:
+            keycode = (uint8_t) ch;
+            break;
+    }
+
+    return (counter << 8) | keycode;
+}
+#endif
+
+
+#ifdef CURSESSUPPORT
+int drawScreen(std::vector<uint8_t>& mem) {
+    while (running) {
+        for (int y = 0; y < 25; y++) {
+            for (int x = 0; x < 80; x++) {
+                int addr = 0xAA00 + 2 * (x + y * 80);
+                char c = (char)mem[addr + 1];
+                if (c < 32 || c > 126) c = ' ';
+
+                int col = mem[addr];
+
+                attrset(A_NORMAL);
+                if (col) {
+                    attron(COLOR_PAIR(1));
+                }
+
+                mvaddch(y, x, (unsigned char)c);
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(33));
+    }
+    return 0;
+}
+#endif
+
+int runProgram(std::vector<uint8_t> bytes, std::vector<uint16_t>& registers, std::vector<uint8_t>& mem) {
     std::copy(bytes.begin(), bytes.end(), mem.begin());
 
+    int cycleCount = 0;
+
     int freeze = 0;
+
+    int oldChr = 0;
+
+    int chr = 0;
+    int io7 = parseRegisters("io7");
+    int keyRequests = 0;
+
+    int tmpChr = 0x0;
 
     PC = 0;
     SP = 65535; // memory amount - 2 bytes
     while (running) {
+        #ifdef CURSESSUPPORT
+        if (cycleCount % keyPollingRate == 0) {
+            oldChr = tmpChr;
+            tmpChr = pollKey();
+
+            if (oldChr != tmpChr) keyRequests = 0;
+        }
+
+        if (tmpChr != 0) {
+            if (registers[io7] & 0x0200) {
+                chr = tmpChr;
+                keyRequests++;
+            }
+        }
+
+        // cycle 1: keyRequests = 1
+
+        if (registers[io7] > 511) registers[io7] = chr | ((keyRequests == 1) << 8); 
+        #endif
+
         uint8_t b = mem[PC];
         if (freeze > 0) {
             freeze--;
@@ -249,7 +341,20 @@ int runProgram(std::vector<uint8_t> bytes, std::vector<uint16_t>& registers, std
                 int addr = (mem[PC + 1] << 8) | mem[PC + 2];
                 int reg = (mem[PC + 3] << 8) | mem[PC + 4];
                 mem[addr] = (registers[reg] & 0xFF00) >> 8;
-                mem[addr + 1] = registers[reg] &0x00FF;
+                mem[addr + 1] = registers[reg] & 0x00FF;
+                break;
+            }
+            case (uint8_t)(opcode::eOpcode::RLD): {
+                int reg = (mem[PC + 1] << 8) | mem[PC + 2];
+                int addr = (mem[PC + 3] << 8) | mem[PC + 4];
+                registers[reg] = (mem[registers[addr]] << 8) | mem[addr + 1];
+                break;
+            }
+            case (uint8_t)(opcode::eOpcode::RSTR): {
+                int addr = (mem[PC + 1] << 8) | mem[PC + 2];
+                int reg = (mem[PC + 3] << 8) | mem[PC + 4];
+                mem[registers[addr]] = (registers[reg] & 0xFF00) >> 8;
+                mem[registers[addr] + 1] = registers[reg] & 0x00FF;
                 break;
             }
             case (uint8_t)(opcode::eOpcode::XCHG): {
@@ -373,7 +478,7 @@ int runProgram(std::vector<uint8_t> bytes, std::vector<uint16_t>& registers, std
             case (uint8_t)(opcode::eOpcode::NOT): {
                 int reg = (mem[PC + 1] << 8) | mem[PC + 2];
                 
-                registers[reg] = !registers[reg];
+                registers[reg] = ~registers[reg];
                 break;
             }
             case (uint8_t)(opcode::eOpcode::XOR): {
@@ -439,56 +544,62 @@ int runProgram(std::vector<uint8_t> bytes, std::vector<uint16_t>& registers, std
                 break;
             }
             case (uint8_t)(opcode::eOpcode::JMP): {
-                int val = (mem[PC + 1] << 8) | mem[PC + 2];
-
-                PC = val - 5;
+                int16_t offset = (int16_t)((mem[PC + 1] << 8) | mem[PC + 2]);
+                if (getFlag(registers, FlagBit::JUMP_BIT)) { // relative jump
+                    PC += offset - 5;
+                } else { // absolute jump
+                    PC = offset - 5;
+                }
                 break;
             }
             case (uint8_t)(opcode::eOpcode::JZ): {
+                int16_t offset = (int16_t)((mem[PC + 1] << 8) | mem[PC + 2]);
                 if (getFlag(registers, FlagBit::ZERO_BIT)) {
-                    int val = (mem[PC + 1] << 8) | mem[PC + 2];
-
-                    PC = val - 5;
+                    PC = getFlag(registers, FlagBit::JUMP_BIT) ? PC + offset - 5 : offset - 5;
                 }
                 break;
             }
+
             case (uint8_t)(opcode::eOpcode::JNZ): {
+                int16_t offset = (int16_t)((mem[PC + 1] << 8) | mem[PC + 2]);
                 if (!getFlag(registers, FlagBit::ZERO_BIT)) {
-                    int val = (mem[PC + 1] << 8) | mem[PC + 2];
-
-                    PC = val - 5;
+                    PC = getFlag(registers, FlagBit::JUMP_BIT) ? PC + offset - 5 : offset - 5;
                 }
                 break;
             }
+
             case (uint8_t)(opcode::eOpcode::JGT): {
-                if (!getFlag(registers, FlagBit::SIGN_BIT) && !getFlag(registers, FlagBit::ZERO_BIT)) {
-                    int val = (mem[PC + 1] << 8) | mem[PC + 2];
-
-                    PC = val - 5;
+                int16_t offset = (int16_t)((mem[PC + 1] << 8) | mem[PC + 2]);
+                // Greater than zero: Z=0, S=0
+                if (!getFlag(registers, FlagBit::ZERO_BIT) && !getFlag(registers, FlagBit::SIGN_BIT)) {
+                    PC = getFlag(registers, FlagBit::JUMP_BIT) ? PC + offset - 5 : offset - 5;
                 }
                 break;
             }
+
             case (uint8_t)(opcode::eOpcode::JLT): {
+                int16_t offset = (int16_t)((mem[PC + 1] << 8) | mem[PC + 2]);
+                // Less than zero: S=1
                 if (getFlag(registers, FlagBit::SIGN_BIT)) {
-                    int val = (mem[PC + 1] << 8) | mem[PC + 2];
-
-                    PC = val - 5;
+                    PC = getFlag(registers, FlagBit::JUMP_BIT) ? PC + offset - 5 : offset - 5;
                 }
                 break;
             }
+
             case (uint8_t)(opcode::eOpcode::JGE): {
-                if (!getFlag(registers, FlagBit::SIGN_BIT)) {
-                    int val = (mem[PC + 1] << 8) | mem[PC + 2];
-
-                    PC = val - 5;
+                int16_t offset = (int16_t)((mem[PC + 1] << 8) | mem[PC + 2]);
+                // Greater than or equal zero: S=0 or Z=1
+                if (!getFlag(registers, FlagBit::SIGN_BIT) || getFlag(registers, FlagBit::ZERO_BIT)) {
+                    PC = getFlag(registers, FlagBit::JUMP_BIT) ? PC + offset - 5 : offset - 5;
                 }
                 break;
             }
-            case (uint8_t)(opcode::eOpcode::JLE): {
-                if (getFlag(registers, FlagBit::SIGN_BIT) && getFlag(registers, FlagBit::ZERO_BIT)) {
-                    int val = (mem[PC + 1] << 8) | mem[PC + 2];
 
-                    PC = val - 5;
+            case (uint8_t)(opcode::eOpcode::JLE): {
+                int16_t offset = (int16_t)((mem[PC + 1] << 8) | mem[PC + 2]);
+                // Less than or equal zero: S=1 or Z=1
+                if (getFlag(registers, FlagBit::SIGN_BIT) || getFlag(registers, FlagBit::ZERO_BIT)) {
+                    PC = getFlag(registers, FlagBit::JUMP_BIT) ? PC + offset - 5 : offset - 5;
                 }
                 break;
             }
@@ -526,34 +637,34 @@ int runProgram(std::vector<uint8_t> bytes, std::vector<uint16_t>& registers, std
                 freeze = val;
                 break;
             }
-
-        }
-        for (int y = 0; y < 25; y++) {
-            for (int x = 0; x < 80; x++) {
-                int addr = 0xAA00 + 2 * (x + y * 80);
-                char c = (char)mem[addr + 1];
-                if (c < 32 || c > 126) c = ' ';
-
-                int col = mem[addr];
-
-                attrset(A_NORMAL);
-                if (col) {
-                    attron(COLOR_PAIR(1));
-                }
-
-                mvaddch(y, x, (unsigned char)c);
+            case (uint8_t)(opcode::eOpcode::TJF): {
+                setFlag(registers, FlagBit::JUMP_BIT, !getFlag(registers, FlagBit::JUMP_BIT));
+                break;
             }
+
         }
         PC += 5;
         skip:
-        refresh();
+        cycleCount++;
     }
-    // std::cout << registers[parseRegisters("io0")] << std::endl;
-    return 0;
+    return cycleCount;
 }
 
 
 int main(int argc, char** argv) {
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "--polling")) {
+            keyPollingRate = to_int(argv[i + 1]);
+        }
+        else if (!strcmp(argv[i], "--registers")) {
+            regAmount = to_int(argv[i + 1]);
+        }
+        else if (!strcmp(argv[i], "help")){
+            std::cout << "Run fmasm on the assembly file you want to compile (fmasm file.s), then run fmemu in the same directory to emulate it.\n--polling - sets the polling rate of the keyboard. It runs once per n cycles.\n--registers - sets the amount of general purpose registers. r0 - rn-1." << std::endl;
+            return 0;
+        }
+    }
+
     std::vector<uint8_t> bytes = readBytes("out.bin");
 
     std::vector<uint16_t> registers(10 + regAmount, 0);
@@ -561,6 +672,7 @@ int main(int argc, char** argv) {
 
     int lookup[5] = {-1, 0, 0, 1, 1};
 
+    #ifdef DISASSEMBLE
     size_t i = 0;
     while (i < bytes.size()) {
         // Print raw bytes
@@ -595,19 +707,51 @@ int main(int argc, char** argv) {
         std::cout << std::endl;
         i += 5; // Next instruction
     }
+    #endif
 
+    #ifdef CURSESSUPPORT
     initscr();
     start_color();
     cbreak();
     noecho();
     keypad(stdscr, TRUE);
+    nodelay(stdscr, TRUE);
 
     init_pair(1, COLOR_BLACK, COLOR_WHITE);
 
-    runProgram(bytes, registers, memory);
+    std::thread renderer(drawScreen, std::ref(memory));
+    #endif
+
+    auto start = std::chrono::high_resolution_clock::now();
+    int cycles = runProgram(bytes, registers, memory);
+    auto end = std::chrono::high_resolution_clock::now();
+
+    running = false;
+    
+    #ifdef CURSESSUPPORT
+    renderer.join();
 
     endwin();
+    #endif
 
+
+    #if !defined(CURSESSUPPORT) || defined(OUTDEBUG)
+        std::cout << "\nRegister output:" << std::endl;
+        for (int i = 0; registerName(i) != "???"; i++) {
+            std::cout << registerName(i) << ": " << registers[i] << std::endl;
+        }
+
+        std::cout << "\nOUTPUT: " << registers[parseRegisters("io0")] << std::endl;
+        std::cout << "Writing memory data to mem.bin..." << std::endl;
+
+        std::ofstream outstream("mem.bin", std::ios::binary);
+        outstream.write(reinterpret_cast<const char*>(memory.data()), memory.size());
+
+        outstream.close();
+    #endif
+
+    std::chrono::duration<double> duration = end - start;
+    std::cout << "CPU ran at " << cycles / duration.count() / 1000000 << "MHz" << std::endl;
 
     return 0;
 }

@@ -1,5 +1,4 @@
 # FMBYAS
-### (Pronounced "Femboy Ass")
 ## Formattable Multi-architecture Based Yield Assembly
 
 ## OPCODES:
@@ -9,6 +8,8 @@ LDI = Load immediate into register                                  (ldi [regist
 MOV = Move value from register A to B                               (mov [register B] [register A])
 LD = Load value from RAM into register                              (ld [register] [addr])
 STR = Store value from register into RAM                            (str [addr] [register])
+RLD = Load value from RAM address stored in register into register  (rld [register] [register])
+RSTR = Store value from register to RAM address stored in register  (rstr [register] [register])
 XCHG = Swaps the contents of two registers                          (xchg [register] [register])
 PSH = Pushes a register value onto the stack                        (psh [register])
 PSHI = Pushes an immediate value onto the stack                     (pshi [value])
@@ -60,7 +61,9 @@ HLT = Halts execution                                               (hlt)
 WAIT = Halts for the amount of cycles described by a register       (wait [register])
 WAITI = Halts for a certain amount of cycles                        (waiti [value])
 CONT = Continue execution in RAM                                    (cont) (Compiles, but doesn't run in FMBYAS-2)
+TJF = Toggles the fj flag between 0 and 1                           (tjf)
 ```
+- All instructions follow the format `OPCODE <DEST> <SRC>`
 
 ## REGISTERS:
 ```
@@ -69,9 +72,12 @@ pc: Program counter. What the index of the currently executed instruction is
 stackptr: The length of the stack
 io0 - io7: I/O registers. io0 is for reading/writing to harddrive and io1 is for harddrive flag
 
+FLAGS ARE NOT ACCESSABLE USING LDI, MOV...
 fz: Zero flag
 fn: Negative flag
 fg: Greater flag
+
+fj: Jump flag. 0 is Absolute Jumping, 1 is Relative Jumping
 ```
 
 ## Quickscan list:
@@ -80,6 +86,8 @@ LDI = Load immediate into register                                  (ldi [regist
 MOV = Move value from register A to B                               (mov [register] [register])
 LD = Load value from RAM into register                              (ld [register] [addr])
 STR = Store value from register into RAM                            (str [addr] [register])
+RLD = Load value from RAM address stored in register into register  (rld [register] [register])
+RSTR = Store value from register to RAM address stored in register  (rstr [register] [register])
 XCHG = Swaps the contents of two registers                          (xchg [register] [register])
 PSH = Pushes a register value onto the stack                        (psh [register])
 PSHI = Pushes an immediate value onto the stack                     (pshi [value])
@@ -117,6 +125,7 @@ HLT = Halts execution until resume button is pressed                (hlt)
 WAIT = Halts for the amount of cycles described by a register       (wait [register])
 WAITI = Halts for a certain amount of cycles                        (waiti [value])
 CONT = Continue execution in RAM                                    (cont)
+TJF = Toggles the fj flag between 0 and 1                           (tjf)
 ```
 
 
@@ -125,8 +134,38 @@ CONT = Continue execution in RAM                                    (cont)
  - The emulator should have exactly 64K of space
  - The stack should start att 0xFFFF and then decrement
  - When writing to RAM, the high bits should get put in the address and the low bits should be put in the address + 1.
+ - The program written by the user should be put at address 0x0000 from ROM.
+ - The FJ flag should be set to 0 (absolute jumping) as default.
 
 ### Screen:
- - When printing to the screen, an ascii character should be put in the low bits of a register and write to memory location 0xAA00 + 2 * (x + y * 80).
+ - When printing to the screen, an ascii character should be put in the low bits of a register and write to memory location 0xAA00 + 2 * (x + y * 80) (The max location is therefore 0xB9A0).
  - The screen size should be 80x25.
 
+### Keyboard:
+ - Keyboard input is handled through io7.
+ - The high byte is what the CPU writes to to get input from the keyboard. It fetches the most current keypress. This makes the emulator completely overwrite the io7 register. The outputted value has to be greater than 511 and the first bit of the high byte represents whether or not the key has updated since last request.
+ - The low byte represents the key being pressed. Follows ASCII for most characters, but some don't.
+ - All keycodes are returned as their ASCII codes and are modified depending on Shift (a (97) + [SHIFT] -> A (65), 1 (49) + [SHIFT] -> ! (32)) except the following list.
+```
+[BACKSPACE] - 8
+[TAB] - 9
+[RETURN] - 10
+[ARROWUP] - 17
+[ARROWDOWN] - 18
+[ARROWLEFT] - 19
+[ARROWRIGHT] - 20
+[ESCAPE] - 27
+[SPACE] - 32
+[DEL] - 127
+```
+
+### Arguments:
+- `--polling` - The polling rate of the keyboard (1000 means once every 1000 cycles). 1000 is the standard value.
+- `--registers` - Sets the amount of general purpose registers (2 allows for r0, r1. 16 for r0 - r15, 32 for r0 - r31...). The standard value is 16.
+
+## Assembler spec:
+- Always has to take in the file as the first argument.
+- `-r` is the second argument and if it's present, it makes the assembler start with relative jumping instead of absolute.
+- The assembler should always insert a `jmp _start` instruction before everything else to make sure it starts at the right spot.
+- Each assembler should omit an ID byte between `jmp _start` and `_start:` and can put any message after the ID byte.
+- The assembler should support `db` for defining bytes.

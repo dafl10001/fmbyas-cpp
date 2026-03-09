@@ -7,7 +7,7 @@
 #include <algorithm>
 #include <iterator>
 #include <cstdint>
-
+#include <cstring>
 
 namespace opcode {
     constexpr int NONE = 0;
@@ -15,7 +15,7 @@ namespace opcode {
     constexpr int VAL = 2;
 
     const std::vector<std::string> opcodes {
-        "ldi", "mov", "ld", "str", "xchg",
+        "ldi", "mov", "ld", "str", "rld", "rstr", "xchg",
         "psh", "pshi", "pop", "pek", "srmv",
         "swp", "lea",
         "add", "sub", "mul", "div", "inc", "dec",
@@ -23,14 +23,28 @@ namespace opcode {
         "shl", "shr", "rsl", "rsr",
         "cmp", "jmp", "jz", "jnz", "jgt", "jlt", "jge", "jle",
         "call", "callr", "ret",
-        "nop", "hlt", "wait", "waiti", "cont"
+        "nop", "hlt", "wait", "waiti", "cont", "tjf"
     };
 
+    enum class eOpcode : uint8_t {
+        LDI, MOV, LD, STR, RLD, RSTR, XCHG,
+        PSH, PSHI, POP, PEK, SRMV,
+        SWP, LEA,
+        ADD, SUB, MUL, DIV, INC, DEC,
+        AND, OR, NOT, XOR,
+        SHL, SHR, RSL, RSR,
+        CMP, JMP, JZ, JNZ, JGT, JLT, JGE, JLE,
+        CALL, CALLR, RET,
+        NOP, HLT, WAIT, WAITI, CONT, TJF
+    };
+  
     const std::unordered_map<std::string, std::vector<int>> operands {
         {"ldi",   {REG, VAL}},
         {"mov",   {REG, REG}},
         {"ld",    {REG, VAL}},
         {"str",   {VAL, REG}},
+        {"rld", {REG, REG}},
+        {"rstr", {REG, REG}},
         {"xchg",  {REG, REG}},
         {"psh",   {REG, NONE}},
         {"pshi",  {VAL, NONE}},
@@ -68,9 +82,10 @@ namespace opcode {
         {"hlt",   {NONE, NONE}},
         {"wait",  {REG, NONE}},
         {"waiti", {VAL, NONE}},
-        {"cont",  {NONE, NONE}}
+        {"cont",  {NONE, NONE}},
+        {"tjf",   {NONE, NONE}}
     };
-};
+}
 
 int regAmount = 16;
 
@@ -183,19 +198,22 @@ auto parseNumber = [](const std::string &s) -> uint16_t {
     }
 };
 
-std::vector<uint8_t> tokenize(const std::vector<std::string>& code) {
+std::vector<uint8_t> tokenize(const std::vector<std::string>& code, bool startRelative = false) {
     std::unordered_map<std::string, uint16_t> labels;
     std::vector<uint8_t> out;
+    bool isRelative = startRelative;
+
+    int instr_offset = 0;
 
     auto is_opcode = [](const std::string &s) {
         return std::find(opcode::opcodes.begin(), opcode::opcodes.end(), s) != opcode::opcodes.end();
     };
 
-    int instr_count = 0;
+    size_t instr_count = 0;
     for (const auto& tok : code) {
         if (tok.empty()) continue;
         if (tok.back() == ':') {
-            labels[tok.substr(0, tok.size() - 1)] = static_cast<uint16_t>(instr_count * 5);
+            labels[tok.substr(0, tok.size() - 1)] = static_cast<uint16_t>(instr_count * 5 + instr_offset);
         } else if (is_opcode(tok)) {
             instr_count++;
         }
@@ -206,28 +224,36 @@ std::vector<uint8_t> tokenize(const std::vector<std::string>& code) {
         if (tok.empty() || tok.back() == ':') continue;
 
         if (is_opcode(tok)) {
-            uint8_t op_idx = static_cast<uint8_t>(std::distance(opcode::opcodes.begin(),
-                                                  std::find(opcode::opcodes.begin(), opcode::opcodes.end(), tok)));
-            out.push_back(op_idx);
-
+            uint8_t op_idx = static_cast<uint8_t>(std::distance(
+                opcode::opcodes.begin(),
+                std::find(opcode::opcodes.begin(), opcode::opcodes.end(), tok)
+            ));
+            
             const std::vector<int>& requirements = opcode::operands.at(tok);
             uint16_t ops[2] = {0, 0};
 
+            size_t instr_start = out.size();
+            out.push_back(op_idx);
+
             for (int step = 0; step < 2; ++step) {
                 if (requirements[step] != opcode::NONE) {
-                    i++; 
+                    i++;
                     if (i < code.size()) {
                         const std::string &operand_tok = code[i];
-                        
                         int reg = parseRegisters(operand_tok);
+
                         if (reg != -1) {
                             ops[step] = static_cast<uint16_t>(reg);
                         } else if (labels.count(operand_tok)) {
                             ops[step] = labels[operand_tok];
                         } else {
-                            try {
-                                ops[step] = static_cast<uint16_t>(parseNumber(operand_tok));
-                            } catch (...) { ops[step] = 0; }
+                            ops[step] = parseNumber(operand_tok);
+                        }
+
+                        if (static_cast<opcode::eOpcode>(op_idx) == opcode::eOpcode::TJF && step == 0) {
+                            size_t next_instr_addr = instr_start + 5;
+                            int16_t rel = static_cast<int16_t>(ops[step]) - static_cast<int16_t>(next_instr_addr);
+                            ops[step] = static_cast<uint16_t>(rel);
                         }
                     }
                 } else {
@@ -237,8 +263,13 @@ std::vector<uint8_t> tokenize(const std::vector<std::string>& code) {
 
             emit16_be(out, ops[0]);
             emit16_be(out, ops[1]);
+
+            if (static_cast<opcode::eOpcode>(op_idx) == opcode::eOpcode::TJF) {
+                isRelative = !isRelative;
+            }
         }
     }
+
     return out;
 }
 
@@ -302,6 +333,14 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    bool relJumping = false;
+
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "-r")) {
+            relJumping = true;
+        }
+    }
+
     std::ifstream File(argv[1]);
     std::string buf;
     std::string text;
@@ -310,9 +349,11 @@ int main(int argc, char** argv) {
         buf += text + "\n";
     }
 
-    std::vector<std::string> temp = splitCode(removeComments(buf));
+    std::string strippedCode = "jmp _start\n" + removeComments(buf);
 
-    std::vector<uint8_t> result = tokenize(temp);
+    std::vector<std::string> temp = splitCode(strippedCode);
+
+    std::vector<uint8_t> result = tokenize(temp, relJumping);
 
     std::ofstream outstream("out.bin", std::ios::binary);
     outstream.write(reinterpret_cast<const char*>(result.data()), result.size());
